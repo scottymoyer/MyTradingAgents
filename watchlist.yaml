@@ -1,0 +1,18 @@
+# Candidates under consideration (not currently held).
+# TEMPLATE — fill in your own values locally.
+#
+# Field notes:
+#   ticker     - symbol, e.g. COPX
+#   asset_type - one of: stock | etf
+#                (the analysis engine itself only distinguishes stock vs crypto,
+#                 so `etf` is analyzed via the stock pipeline)
+#   thesis     - why this is on the list; printed alongside the engine's call
+#   tag        - free-form grouping label (e.g. diversification, momentum)
+#
+# Add one entry per candidate (repeat the block below).
+
+watchlist:
+  - ticker: ""
+    asset_type: ""
+    thesis: ""
+    tag: ""

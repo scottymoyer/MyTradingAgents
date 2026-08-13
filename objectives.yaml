@@ -1,0 +1,13 @@
+# RESERVED FOR LATER — nothing reads this file yet.
+#
+# This is a placeholder for a future portfolio-objectives layer. It will
+# eventually describe constraints the analysis is judged against, such as:
+#
+#   - risk tolerance
+#   - allocation targets (by asset class, sector, or account)
+#   - concentration limits (max % in a single position)
+#   - tax sensitivity (e.g. short- vs long-term gain treatment by account)
+#
+# Deliberately empty: no loader parses it, and no reasoning is built against
+# these concepts yet. See the PORTFOLIO-FIT TODO in run_ddog.py for where the
+# consuming layer will go.

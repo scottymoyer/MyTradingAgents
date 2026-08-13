@@ -1,0 +1,22 @@
+# Current portfolio holdings. TEMPLATE — fill in your own values locally.
+#
+# Valid `account` values (canonical keys — anything else is rejected by the loader):
+#   etrade_taxable
+#   fidelity_retirement
+#   robinhood_active
+#
+# Field notes:
+#   ticker       - symbol, e.g. DDOG
+#   shares       - number of shares held (number)
+#   cost_basis   - average cost per share (number)
+#   acquire_date - YYYY-MM-DD
+#
+# Prices and market values are NOT stored here; they are fetched at runtime by the engine.
+# Add one entry per position (repeat the block below).
+
+holdings:
+  - ticker: ""
+    account: ""
+    shares: 0
+    cost_basis: 0.00        # avg cost per share
+    acquire_date: ""

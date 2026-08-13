@@ -86,7 +86,12 @@ DEPTH_CHOICES = {"shallow": 1, "medium": 3, "deep": 5}
 # stays checkable rather than becoming folklore.
 MEM_BASE_MB = 250
 MEM_PER_WORKER_MB = 32
-DEFAULT_CONCURRENCY = 3
+
+# 5 is the highest concurrency with direct measurement behind it: 4.54x speedup
+# (91% of theoretical), 364MB peak, 582MB still free, swap +13MB, load 0.01, and
+# no provider rate-limiting. 8-10 projects fine but is untested, so it is opt-in
+# via --concurrency rather than the default.
+DEFAULT_CONCURRENCY = 5
 
 
 def peak_rss_mb() -> float | None:
@@ -424,6 +429,18 @@ def main() -> None:
 
         rows = holdings_rows + watchlist_rows
         workers = max(1, min(args.concurrency, total))
+
+        # Clamp DOWN to what free RAM supports, never up: available memory on
+        # this box swings by hundreds of MB depending on what else is resident,
+        # and swapping is slower than running serially. Scaling up automatically
+        # would instead make the same command behave differently run to run.
+        avail = available_mb()
+        if avail is not None:
+            fits = int((avail - MEM_BASE_MB) // MEM_PER_WORKER_MB)
+            if 1 <= fits < workers:
+                print(f"  note: reducing concurrency {workers} -> {fits} to fit "
+                      f"{avail:.0f} MB available (pass --concurrency to override)")
+                workers = fits
 
         # Build the graphs SERIALLY, before any worker starts. TradingAgentsGraph
         # .__init__ calls dataflows.config.set_config(), which mutates a module-level

@@ -43,6 +43,7 @@ import argparse
 import copy
 import queue
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -61,14 +62,43 @@ SELECTED_ANALYSTS = ("market", "social", "news", "fundamentals")
 DEPTH_SHALLOW = 1
 DEPTH_CHOICES = {"shallow": 1, "medium": 3, "deep": 5}
 
-# Measured on this host (t4g.small): imports are shared across threads and cost
-# ~124MB once; the first graph adds ~40MB and each extra graph only ~0.2MB. The
-# real per-ticker cost is live run state (messages/reports/frames), inferred at
-# ~115MB from an observed 281MB single-run peak. Threads are used rather than
-# processes precisely so the import cost is paid once, not per worker.
-MEM_BASE_MB = 165
-MEM_PER_WORKER_MB = 115
+# Memory model, corrected against measurement.
+#
+# Component costs on this host (t4g.small), measured directly:
+#   ~124MB  imports (langchain/langgraph/pandas) -- paid ONCE, shared by all
+#           threads. This is why threads are used instead of processes.
+#   ~40MB   first TradingAgentsGraph
+#   ~0.2MB  each additional graph
+#
+# The first estimate here assumed ~115MB of *additional* live state per
+# concurrent ticker. A real two-ticker run disproved that: peak RSS was 281MB
+# for two tickers, identical to a single-ticker run, with MemAvailable never
+# below 649MB and no swap growth. Most per-run state is short-lived and the
+# allocator reuses it across threads, so the marginal cost of a second worker
+# was effectively zero.
+#
+# Observed peak RSS (VmHWM) by concurrency, all on this host:
+#     n=1  281MB      n=2  281MB      n=5  364MB
+# Fitting the n=2 -> n=5 slope gives ~28MB per additional worker on a ~225MB
+# base, which reproduces both points within ~1MB. The constants below round
+# that up slightly so the estimate errs high (warning early is cheap; swapping
+# is not). Each run prints its own VmHWM against this prediction, so the model
+# stays checkable rather than becoming folklore.
+MEM_BASE_MB = 250
+MEM_PER_WORKER_MB = 32
 DEFAULT_CONCURRENCY = 3
+
+
+def peak_rss_mb() -> float | None:
+    """Peak RSS for this process (VmHWM), the kernel's own high-water mark."""
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return None
 
 _print_lock = threading.Lock()
 
@@ -212,6 +242,51 @@ def analyze_one(graph: TradingAgentsGraph, ticker: str, trade_date: str, asset_t
         final_state, decision = graph.propagate(ticker, trade_date, asset_type=asset_type)
         report_path = graph.save_reports(final_state, ticker)
     return {"decision": decision, "report_path": report_path}
+
+
+def _print_timing(results: dict, wall: float, workers: int) -> None:
+    """Show where the wall clock actually went.
+
+    A concurrent batch can under-deliver for reasons that are invisible in the
+    total (provider-side queuing, retries, one slow ticker holding the tail), so
+    print each ticker's start/end offsets alongside the aggregate.
+    """
+    timed = {t: r for t, r in results.items() if "t_start" in r and "t_end" in r}
+    if not timed:
+        return
+    serial = sum(r["t_end"] - r["t_start"] for r in timed.values())
+
+    print()
+    print("=" * 72)
+    print("Timing")
+    print("=" * 72)
+    print(f"  {'ticker':<10} {'start':>8} {'end':>8} {'duration':>10}")
+    for t, r in sorted(timed.items(), key=lambda kv: kv[1]["t_start"]):
+        dur = r["t_end"] - r["t_start"]
+        print(f"  {t:<10} {r['t_start']:>7.1f}s {r['t_end']:>7.1f}s {dur:>9.1f}s")
+
+    # Peak overlap actually achieved, from the start/end intervals.
+    events = []
+    for r in timed.values():
+        events.append((r["t_start"], 1))
+        events.append((r["t_end"], -1))
+    events.sort()
+    cur = peak = 0
+    for _, delta in events:
+        cur += delta
+        peak = max(peak, cur)
+
+    print()
+    print(f"  wall clock            : {wall:.1f}s")
+    print(f"  sum of durations      : {serial:.1f}s  (what serial would cost)")
+    print(f"  speedup               : {serial / wall:.2f}x  (theoretical max {workers}x)")
+    print(f"  peak overlap observed : {peak} of {workers} workers")
+    hwm = peak_rss_mb()
+    if hwm is not None:
+        avail = available_mb()
+        print(f"  peak RSS (VmHWM)      : {hwm:.0f} MB"
+              + (f"   MemAvailable now {avail:.0f} MB" if avail else ""))
+        print(f"  model predicted       : ~{MEM_BASE_MB + workers * MEM_PER_WORKER_MB:.0f} MB")
 
 
 def _print_group(title: str, rows: list[dict], results: dict[str, dict], is_watchlist: bool) -> None:
@@ -369,6 +444,7 @@ def main() -> None:
             nonlocal done
             ticker = row["ticker"]
             graph = pool.get()          # one graph per worker; never shared concurrently
+            t_start = time.monotonic()
             try:
                 outcome = analyze_one(graph, ticker, trade_date, row["asset_type"])
             except Exception as exc:    # one bad ticker must not kill the batch
@@ -377,6 +453,8 @@ def main() -> None:
                     traceback.print_exc()
             finally:
                 pool.put(graph)
+            outcome["t_start"] = t_start - t_zero
+            outcome["t_end"] = time.monotonic() - t_zero
             with results_lock:
                 results[ticker] = outcome
                 done += 1
@@ -385,10 +463,14 @@ def main() -> None:
                  + (outcome["error"] if "error" in outcome else outcome["decision"]))
 
         print(f"\nAnalyzing {total} ticker(s) with concurrency {workers} ...")
+        t_zero = time.monotonic()
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ta") as ex:
             futures = [ex.submit(run_one, row) for row in rows]
             for f in as_completed(futures):
                 f.result()   # run_one swallows analysis errors; this re-raises only bugs
+        wall = time.monotonic() - t_zero
+
+        _print_timing(results, wall, workers)
 
         _print_group("Current Holdings", holdings_rows, results, is_watchlist=False)
         _print_group("Watchlist / Candidates", watchlist_rows, results, is_watchlist=True)

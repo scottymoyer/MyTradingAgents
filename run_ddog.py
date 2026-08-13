@@ -41,10 +41,15 @@ LLMObs.enable(
 
 import argparse
 import copy
+import queue
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
+import memlog_guard
 import portfolio
+import reddit_oauth
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
@@ -55,6 +60,54 @@ SELECTED_ANALYSTS = ("market", "social", "news", "fundamentals")
 # ticker runs default to shallow to control cost.
 DEPTH_SHALLOW = 1
 DEPTH_CHOICES = {"shallow": 1, "medium": 3, "deep": 5}
+
+# Measured on this host (t4g.small): imports are shared across threads and cost
+# ~124MB once; the first graph adds ~40MB and each extra graph only ~0.2MB. The
+# real per-ticker cost is live run state (messages/reports/frames), inferred at
+# ~115MB from an observed 281MB single-run peak. Threads are used rather than
+# processes precisely so the import cost is paid once, not per worker.
+MEM_BASE_MB = 165
+MEM_PER_WORKER_MB = 115
+DEFAULT_CONCURRENCY = 3
+
+_print_lock = threading.Lock()
+
+
+def _say(msg: str) -> None:
+    """Thread-safe progress line."""
+    with _print_lock:
+        print(msg, flush=True)
+
+
+def available_mb() -> float | None:
+    """MemAvailable in MB, or None if it cannot be read."""
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return None
+
+
+def check_memory(concurrency: int) -> None:
+    """Warn when the requested concurrency will not fit in available RAM.
+
+    Swapping would make the run slower than serial, so this is worth saying
+    out loud rather than discovering via thrash.
+    """
+    avail = available_mb()
+    need = MEM_BASE_MB + concurrency * MEM_PER_WORKER_MB
+    if avail is None:
+        print(f"memory                 = (unknown); estimated need ~{need:.0f} MB")
+        return
+    verdict = "OK" if need <= avail else "OVER BUDGET"
+    print(f"memory                 = ~{need:.0f} MB needed / {avail:.0f} MB available  [{verdict}]")
+    if need > avail:
+        print(f"  WARNING: concurrency {concurrency} likely exceeds free RAM and may swap,\n"
+              f"           which is slower than running serially. Consider --concurrency "
+              f"{max(1, int((avail - MEM_BASE_MB) // MEM_PER_WORKER_MB))}.")
 
 
 def most_recent_weekday() -> str:
@@ -222,10 +275,23 @@ def main() -> None:
         help="Research depth; sets both round counts (shallow=1, medium=3, deep=5). Default: shallow.",
     )
     parser.add_argument(
+        "--concurrency", type=int, default=DEFAULT_CONCURRENCY, metavar="N",
+        help=f"Analyze N tickers at once (default: {DEFAULT_CONCURRENCY}). The work is "
+             "I/O-bound on the LLM API, so threads help; RAM is the limiter.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Resolve tickers/config and init the tracer, then exit WITHOUT any LLM calls.",
     )
     args = parser.parse_args()
+
+    # Swap the sentiment analyst's Reddit source to the authenticated API when
+    # credentials are present; no-op (keeps anonymous RSS) when they are not.
+    reddit_oauth.install()
+
+    # Serialise the shared memory-log file. Its read-modify-write cycles and
+    # single fixed .tmp path corrupt/lose entries under concurrency.
+    memlog_guard.install()
 
     trade_date = args.date_flag or args.date or most_recent_weekday()
     depth = DEPTH_CHOICES[args.depth]
@@ -235,6 +301,9 @@ def main() -> None:
     print(f"mode                   = {args.mode}")
     print(f"trade_date             = {trade_date}")
     print(f"depth                  = {args.depth} ({depth})")
+    if args.mode != "single":
+        print(f"concurrency            = {args.concurrency}")
+        check_memory(args.concurrency)
     if args.tickers:
         print(f"--tickers filter       = {args.tickers}")
     if args.limit is not None:
@@ -278,24 +347,48 @@ def main() -> None:
             print("\nNothing to analyze after filters. Exiting.")
             return
 
-        # One graph instance reused across tickers: the engine sets per-run
-        # state inside propagate(), and reusing it avoids rebuilding the LLM
-        # clients for every ticker.
-        graph = TradingAgentsGraph(
-            selected_analysts=SELECTED_ANALYSTS, config=config, debug=False,
-        )
+        rows = holdings_rows + watchlist_rows
+        workers = max(1, min(args.concurrency, total))
+
+        # Build the graphs SERIALLY, before any worker starts. TradingAgentsGraph
+        # .__init__ calls dataflows.config.set_config(), which mutates a module-level
+        # global; constructing concurrently would race on it. Extra graphs cost
+        # ~0.2MB each (measured), so a pool of `workers` is effectively free.
+        pool: queue.Queue = queue.Queue()
+        for _ in range(workers):
+            pool.put(TradingAgentsGraph(
+                selected_analysts=SELECTED_ANALYSTS, config=config, debug=False,
+            ))
 
         results: dict[str, dict] = {}
-        for idx, row in enumerate(holdings_rows + watchlist_rows, start=1):
+        results_lock = threading.Lock()
+        done = 0
+
+        def run_one(row: dict) -> None:
+            """Analyze one ticker on a borrowed graph. Never raises."""
+            nonlocal done
             ticker = row["ticker"]
-            print(f"\n>>> [{idx}/{total}] analyzing {ticker} ({trade_date}) ...")
+            graph = pool.get()          # one graph per worker; never shared concurrently
             try:
-                results[ticker] = analyze_one(graph, ticker, trade_date, row["asset_type"])
-                print(f"<<< {ticker}: {results[ticker]['decision']}")
-            except Exception as exc:  # one bad ticker shouldn't kill the batch
-                results[ticker] = {"error": f"{type(exc).__name__}: {exc}"}
-                print(f"<<< {ticker}: FAILED — {type(exc).__name__}: {exc}")
-                traceback.print_exc()
+                outcome = analyze_one(graph, ticker, trade_date, row["asset_type"])
+            except Exception as exc:    # one bad ticker must not kill the batch
+                outcome = {"error": f"{type(exc).__name__}: {exc}"}
+                with _print_lock:
+                    traceback.print_exc()
+            finally:
+                pool.put(graph)
+            with results_lock:
+                results[ticker] = outcome
+                done += 1
+                n = done
+            _say(f"<<< [{n}/{total}] {ticker}: "
+                 + (outcome["error"] if "error" in outcome else outcome["decision"]))
+
+        print(f"\nAnalyzing {total} ticker(s) with concurrency {workers} ...")
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ta") as ex:
+            futures = [ex.submit(run_one, row) for row in rows]
+            for f in as_completed(futures):
+                f.result()   # run_one swallows analysis errors; this re-raises only bugs
 
         _print_group("Current Holdings", holdings_rows, results, is_watchlist=False)
         _print_group("Watchlist / Candidates", watchlist_rows, results, is_watchlist=True)

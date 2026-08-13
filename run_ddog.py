@@ -41,6 +41,7 @@ LLMObs.enable(
 
 import argparse
 import copy
+import os
 import queue
 import threading
 import time
@@ -166,6 +167,37 @@ def build_config(depth: int = DEPTH_SHALLOW) -> dict:
     config["max_debate_rounds"] = depth
     config["max_risk_discuss_rounds"] = depth
     config["output_language"] = "English"
+
+    # Ordered vendor fallback. yfinance stays primary (unmetered), with
+    # alpha_vantage behind it so a yfinance outage degrades instead of failing:
+    # it is an unofficial scraper and does break. route_to_vendor() walks this
+    # chain on rate-limit / not-configured / no-data / error, logging each hop.
+    #
+    # Verified against the live free-tier key, endpoint by endpoint:
+    #     OVERVIEW        (fundamental_data)     -> works
+    #     NEWS_SENTIMENT  (news_data)            -> works
+    #     SMA             (technical_indicators) -> works
+    #     TIME_SERIES_DAILY_ADJUSTED (core_stock_apis) -> PREMIUM ONLY
+    #
+    # core_stock_apis is therefore left on yfinance alone. The app's Alpha
+    # Vantage stock path calls the adjusted series, which a free key cannot
+    # reach, so chaining it there would spend a request to fail every time --
+    # and it surfaces as a confusing "rate limited" warning, because the app
+    # classifies any notice containing "premium" as a rate limit.
+    #
+    # macro_data is fred-only and prediction_markets polymarket-only, so
+    # neither has a fallback to configure.
+    #
+    # Alpha Vantage is second, never first: the free tier is tightly rate
+    # limited, so under concurrency several tickers failing over at once can
+    # still exhaust it. This is best-effort insurance against a yfinance
+    # outage, not a robust second source.
+    config["data_vendors"] = {
+        **config.get("data_vendors", {}),
+        "technical_indicators": "yfinance,alpha_vantage",
+        "fundamental_data": "yfinance,alpha_vantage",
+        "news_data": "yfinance,alpha_vantage",
+    }
     return config
 
 
@@ -179,6 +211,11 @@ def print_resolved_config(config: dict) -> None:
     print(f"max_risk_discuss_rounds= {config['max_risk_discuss_rounds']}")
     print(f"output_language        = {config['output_language']}")
     print(f"selected_analysts      = {SELECTED_ANALYSTS}")
+    dv = config.get("data_vendors", {})
+    print(f"data_vendors           = {dv}")
+    if not os.environ.get("FRED_API_KEY"):
+        print("  note: FRED_API_KEY unset -> macro indicators unavailable this run "
+              "(free key: https://fred.stlouisfed.org/docs/api/api_key.html)")
 
 
 def _apply_filters(tickers: list[str], only: set[str] | None, limit: int | None) -> list[str]:

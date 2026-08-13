@@ -24,8 +24,8 @@ export DD_ENV=prod
 export DD_LLMOBS_ENABLED=1
 export DD_LLMOBS_ML_APP=tradingagents
 
-# Reddit OAuth credentials (optional). Without these the sentiment analyst
-# falls back to the anonymous RSS feed, which this host gets 429d on.
-if [ -f "$HOME/.reddit.env" ]; then set -a; . "$HOME/.reddit.env"; set +a; fi
+# Optional data-source credentials (FRED macro, Reddit OAuth). Each is
+# independently optional; the app degrades gracefully when one is unset.
+if [ -f "$HOME/.tradingagents.env" ]; then set -a; . "$HOME/.tradingagents.env"; set +a; fi
 
 exec "$REPO_DIR/.venv/bin/ddtrace-run" "$REPO_DIR/.venv/bin/python" "$REPO_DIR/run_ddog.py" "$@"

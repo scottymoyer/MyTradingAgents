@@ -284,9 +284,19 @@ def analyze_one(graph: TradingAgentsGraph, ticker: str, trade_date: str, asset_t
     re-initialized nor shut down here — that happens once in main().
     """
     with LLMObs.workflow(name=f"analyze:{ticker}"):
-        LLMObs.annotate(tags={"ticker": ticker, "trade_date": trade_date})
+        # Set input up front so even a failed/errored trace shows what was
+        # attempted; the trace-explorer list surfaces the ROOT span's I/O, so
+        # without this the list reads "No content" (the child agent/LLM spans
+        # carry their own I/O via the langchain/openai integrations).
+        LLMObs.annotate(
+            input_data=f"Analyze {ticker} ({asset_type}) for trade date {trade_date}",
+            tags={"ticker": ticker, "trade_date": trade_date},
+        )
         final_state, decision = graph.propagate(ticker, trade_date, asset_type=asset_type)
         report_path = graph.save_reports(final_state, ticker)
+        # Output = the final call, so the list reads "analyze:BE -> BUY" at a
+        # glance and Evaluations have a root input/output to score against.
+        LLMObs.annotate(output_data=str(decision))
     return {"decision": decision, "report_path": report_path}
 
 

@@ -24,6 +24,17 @@ export DD_ENV=prod
 export DD_LLMOBS_ENABLED=1
 export DD_LLMOBS_ML_APP=tradingagents
 
+# Datadog source code integration: link telemetry to the exact commit + repo so
+# stack frames deep-link to GitHub. Resolved from the checkout at run time (not
+# baked in at build time), so it always reflects the running code and needs no
+# rebuild. The deep-link only resolves if this commit is pushed to the repo, so
+# commit + push before a run you want linked. Guarded so a missing git binary or
+# a non-repo checkout can't abort the run under `set -e`.
+if _sha="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)"; then
+    export DD_GIT_COMMIT_SHA="$_sha"
+    export DD_GIT_REPOSITORY_URL="$(git -C "$REPO_DIR" config --get remote.origin.url 2>/dev/null || true)"
+fi
+
 # Optional data-source credentials (FRED macro, Reddit OAuth). Each is
 # independently optional; the app degrades gracefully when one is unset.
 if [ -f "$HOME/.tradingagents.env" ]; then set -a; . "$HOME/.tradingagents.env"; set +a; fi

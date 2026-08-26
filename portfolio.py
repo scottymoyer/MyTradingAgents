@@ -28,10 +28,12 @@ WATCHLIST_FILE = REPO_DIR / "watchlist.yaml"
 # Canonical account keys. Anything else is a validation error.
 VALID_ACCOUNTS = ("etrade_taxable", "fidelity_retirement", "robinhood_active")
 
-# Asset types accepted in watchlist.yaml. Note the analysis engine itself only
-# distinguishes "stock" vs "crypto", so "etf" is analyzed via the stock
-# pipeline — see engine_asset_type().
-VALID_ASSET_TYPES = ("stock", "etf")
+# Asset types accepted in watchlist.yaml. The analysis engine itself only
+# distinguishes "stock" vs "crypto", so these are mapped down at the engine
+# boundary — see engine_asset_type(): "etf" runs through the stock pipeline,
+# "crypto" through the crypto pipeline. Crypto tickers must be the Yahoo pair
+# form the engine expects, e.g. LINK-USD / BTC-USD.
+VALID_ASSET_TYPES = ("stock", "etf", "crypto")
 
 
 class PortfolioError(ValueError):
@@ -50,17 +52,18 @@ class Holding:
 @dataclass(frozen=True)
 class WatchlistItem:
     ticker: str
-    asset_type: str            # "stock" | "etf"
+    asset_type: str            # "stock" | "etf" | "crypto"
     thesis: str
     tag: str
 
     def engine_asset_type(self) -> str:
         """Map to what the analysis engine understands.
 
-        The engine's ``propagate(..., asset_type=)`` accepts only "stock" or
-        "crypto"; it has no ETF concept, so ETFs run through the stock pipeline.
+        ``propagate(..., asset_type=)`` accepts only "stock" or "crypto". The
+        engine has no ETF concept, so "etf" runs through the stock pipeline;
+        "crypto" maps straight through to the crypto pipeline.
         """
-        return "stock"
+        return "crypto" if self.asset_type == "crypto" else "stock"
 
 
 def _fail(path: Path, row_num: int | None, field: str | None, problem: str) -> None:

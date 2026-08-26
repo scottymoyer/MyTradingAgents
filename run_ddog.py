@@ -88,11 +88,15 @@ DEPTH_CHOICES = {"shallow": 1, "medium": 3, "deep": 5}
 MEM_BASE_MB = 250
 MEM_PER_WORKER_MB = 32
 
-# 5 is the highest concurrency with direct measurement behind it: 4.54x speedup
-# (91% of theoretical), 364MB peak, 582MB still free, swap +13MB, load 0.01, and
-# no provider rate-limiting. 8-10 projects fine but is untested, so it is opt-in
-# via --concurrency rather than the default.
-DEFAULT_CONCURRENCY = 5
+# Default 10. Memory is not the constraint: at n=5 peak RSS was 360MB with
+# ~600MB still free, and the model puts n=10 at ~570MB -- comfortable on this
+# box, and the startup clamp reduces it anyway if free RAM is low. Two things
+# remain UNTESTED above 5 and are the real risks to watch on the first large
+# run: OpenRouter rate limits (n=10 bursts ~10x the requests; none seen at 5)
+# and Alpha Vantage fallback exhaustion if yfinance stumbles mid-batch.
+# Concurrency past the ticker count is harmless but does nothing -- wall clock
+# floors at the slowest single ticker. Lower with --concurrency if 429s appear.
+DEFAULT_CONCURRENCY = 10
 
 
 def peak_rss_mb() -> float | None:

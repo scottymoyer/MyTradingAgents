@@ -221,3 +221,6 @@ __marimo__/
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise
 reports/
+
+# Generated results viewer (regenerate via render_reports.py)
+reports_view.html

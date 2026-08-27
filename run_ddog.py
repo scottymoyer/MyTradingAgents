@@ -294,9 +294,18 @@ def analyze_one(graph: TradingAgentsGraph, ticker: str, trade_date: str, asset_t
         )
         final_state, decision = graph.propagate(ticker, trade_date, asset_type=asset_type)
         report_path = graph.save_reports(final_state, ticker)
-        # Output = the final call, so the list reads "analyze:BE -> BUY" at a
-        # glance and Evaluations have a root input/output to score against.
-        LLMObs.annotate(output_data=str(decision))
+        # Emit the decision (one of the 5-tier set Buy/Overweight/Hold/
+        # Underweight/Sell) so it's chartable as a distribution. Two surfaces,
+        # because they index differently:
+        #   - set_tag on the APM span -> searchable as @decision in APM span
+        #     search and groupable in dashboard widgets (aggregate_spans).
+        #   - LLMObs.annotate tag -> facets in Agent Observability.
+        # annotate tags do NOT reach APM span search (that's why @ticker was
+        # empty in APM earlier), so the set_tag is what the dashboard needs.
+        span = ddtrace.tracer.current_span()
+        if span is not None:
+            span.set_tag("decision", decision)
+        LLMObs.annotate(output_data=str(decision), tags={"decision": decision})
     return {"decision": decision, "report_path": report_path}
 
 

@@ -1,0 +1,14 @@
+{
+  "// note": "Keeps Cursor/VS Code snappy over Remote-SSH: the .venv is ~29k files and would otherwise hammer the remote file watcher and search index.",
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/__pycache__/**": true,
+    "**/*.pyc": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/__pycache__": true,
+    "reports_view.html": true
+  },
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
+}

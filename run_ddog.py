@@ -63,6 +63,12 @@ SELECTED_ANALYSTS = ("market", "social", "news", "fundamentals")
 DEPTH_SHALLOW = 1
 DEPTH_CHOICES = {"shallow": 1, "medium": 3, "deep": 5}
 
+# Default OpenRouter model IDs for the two engine roles. Overridable per run via
+# --deep-model / --quick-model (or --model to set both), e.g. to A/B a stronger
+# model against the gpt-oss preset.
+DEFAULT_DEEP_MODEL = "openai/gpt-oss-120b"
+DEFAULT_QUICK_MODEL = "openai/gpt-oss-20b"
+
 # Memory model, corrected against measurement.
 #
 # Component costs on this host (t4g.small), measured directly:
@@ -157,17 +163,21 @@ def most_recent_weekday() -> str:
     return d.strftime("%Y-%m-%d")
 
 
-def build_config(depth: int = DEPTH_SHALLOW) -> dict:
+def build_config(depth: int = DEPTH_SHALLOW,
+                 deep_model: str = DEFAULT_DEEP_MODEL,
+                 quick_model: str = DEFAULT_QUICK_MODEL) -> dict:
     """DEFAULT_CONFIG with the OpenRouter preset applied.
 
     ``depth`` sets both round counts, mirroring how the interactive CLI's
-    research-depth selection is applied.
+    research-depth selection is applied. ``deep_model``/``quick_model`` are the
+    OpenRouter model IDs for the deep-thinking and quick-thinking roles; both
+    default to the gpt-oss preset but can be overridden per run to A/B models.
     """
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["llm_provider"] = "openrouter"
     config["backend_url"] = "https://openrouter.ai/api/v1"
-    config["deep_think_llm"] = "openai/gpt-oss-120b"
-    config["quick_think_llm"] = "openai/gpt-oss-20b"
+    config["deep_think_llm"] = deep_model
+    config["quick_think_llm"] = quick_model
     config["max_debate_rounds"] = depth
     config["max_risk_discuss_rounds"] = depth
     config["output_language"] = "English"
@@ -420,6 +430,18 @@ def main() -> None:
              "I/O-bound on the LLM API, so threads help; RAM is the limiter.",
     )
     parser.add_argument(
+        "--deep-model", default=DEFAULT_DEEP_MODEL, metavar="ID",
+        help=f"OpenRouter model for the deep-thinking role (default: {DEFAULT_DEEP_MODEL}).",
+    )
+    parser.add_argument(
+        "--quick-model", default=DEFAULT_QUICK_MODEL, metavar="ID",
+        help=f"OpenRouter model for the quick-thinking role (default: {DEFAULT_QUICK_MODEL}).",
+    )
+    parser.add_argument(
+        "--model", default=None, metavar="ID",
+        help="Convenience: set BOTH deep and quick models to this one ID (overrides the two above).",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Resolve tickers/config and init the tracer, then exit WITHOUT any LLM calls.",
     )
@@ -435,7 +457,9 @@ def main() -> None:
 
     trade_date = args.date_flag or args.date or most_recent_weekday()
     depth = DEPTH_CHOICES[args.depth]
-    config = build_config(depth)
+    deep_model = args.model or args.deep_model
+    quick_model = args.model or args.quick_model
+    config = build_config(depth, deep_model, quick_model)
 
     print_resolved_config(config)
     print(f"mode                   = {args.mode}")

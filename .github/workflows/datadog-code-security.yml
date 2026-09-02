@@ -1,0 +1,48 @@
+name: Datadog Code Security
+
+# Static half of the Code Security story (the runtime half — IAST + SCA — is
+# already enabled in run.sh via DD_IAST_ENABLED / DD_APPSEC_SCA_ENABLED):
+#   - SAST: static code analysis of the source for vulnerabilities + quality.
+#   - SCA:  dependency scan for known-vulnerable / non-compliant libraries.
+# Both upload to Datadog Code Security. Diff-aware scanning (default) limits PR
+# runs to changed files; with the Datadog GitHub App installed, findings post as
+# PR comments. Requires two GitHub secrets: DD_API_KEY and DD_APP_KEY (the app
+# key must carry the `code_analysis_read` scope).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:   # lets you re-run manually after adding the secrets
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    name: SAST (static code analysis)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Datadog Static Analysis
+        uses: DataDog/datadog-static-analyzer-github-action@v3
+        with:
+          dd_api_key: ${{ secrets.DD_API_KEY }}
+          dd_app_key: ${{ secrets.DD_APP_KEY }}
+          dd_site: datadoghq.com
+          cpu_count: 2
+          # No static-analysis.datadog.yml on purpose: default rulesets are
+          # auto-selected per language and include the Python security rules.
+          # Add that file later to customize (it OVERRIDES defaults, so list the
+          # security ruleset explicitly if you do).
+
+  sca:
+    runs-on: ubuntu-latest
+    name: SCA (dependency scan)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Datadog Software Composition Analysis
+        uses: DataDog/datadog-sca-github-action@v4
+        with:
+          dd_api_key: ${{ secrets.DD_API_KEY }}
+          dd_app_key: ${{ secrets.DD_APP_KEY }}
+          dd_site: datadoghq.com

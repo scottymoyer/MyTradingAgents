@@ -96,7 +96,7 @@ def collect(reports_dir: Path) -> list[dict]:
 
 def build_html(rows: list[dict]) -> str:
     n = len(rows)
-    dist = {r: 0 for r in RATING_ORDER}
+    dist = dict.fromkeys(RATING_ORDER, 0)
     for row in rows:
         dist[row["rating"]] = dist.get(row["rating"], 0) + 1
     dates = [r["dt"] for r in rows]

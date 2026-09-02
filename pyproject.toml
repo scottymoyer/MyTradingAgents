@@ -81,6 +81,10 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/__init__.py" = ["F401"]   # intentional re-exports
+# run_ddog.py deliberately calls LLMObs.enable() before importing tradingagents
+# so the langchain/openai integrations are patched at import time; its module
+# imports therefore sit below that call and cannot move to the top (E402).
+"run_ddog.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 # Keep multiple aliased names from one module in a single combined import block

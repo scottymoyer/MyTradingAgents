@@ -94,7 +94,7 @@ def memlog_lock():
         outermost = _depth == 1
         if outermost:
             try:
-                _lock_fh = open(_resolve_lock_path(), "a+")
+                _lock_fh = open(_resolve_lock_path(), "a+")  # noqa: SIM115 -- held for the lock duration, closed in finally
                 fcntl.flock(_lock_fh.fileno(), fcntl.LOCK_EX)
             except OSError as exc:
                 # A filesystem without flock support must not break the run --
@@ -145,44 +145,3 @@ def install() -> bool:
     cls._memlog_guard_installed = True
     logger.info("memory-log guard installed on: %s", ", ".join(wrapped))
     return True
-
-
-if __name__ == "__main__":
-    # Self-check: hammer the guarded methods from many threads and confirm the
-    # shared log file is never corrupted and no entry is lost.
-    import os, random, sys, tempfile, time
-    logging.basicConfig(level=logging.INFO, format="  %(levelname)s %(message)s")
-
-    tmpdir = tempfile.mkdtemp()
-    log = Path(tmpdir) / "trading_memory.md"
-    log.write_text("", encoding="utf-8")
-    _lock_path = log.with_suffix(".lock")
-
-    N_THREADS, N_WRITES = 8, 25
-
-    def unguarded_rmw(i):
-        """Simulates the app's read -> modify -> write-temp -> replace cycle."""
-        text = log.read_text(encoding="utf-8")
-        time.sleep(random.uniform(0.0005, 0.002))   # widen the race window
-        tmp = log.with_suffix(".tmp")                # SAME path for every worker
-        tmp.write_text(text + f"entry-{i}\n", encoding="utf-8")
-        tmp.replace(log)
-
-    def guarded_rmw(i):
-        with memlog_lock():
-            unguarded_rmw(i)
-
-    for label, fn in (("WITHOUT guard", unguarded_rmw), ("WITH guard", guarded_rmw)):
-        log.write_text("", encoding="utf-8")
-        threads = []
-        counter = iter(range(N_THREADS * N_WRITES))
-        def worker():
-            for _ in range(N_WRITES):
-                fn(next(counter))
-        for _ in range(N_THREADS):
-            t = threading.Thread(target=worker); t.start(); threads.append(t)
-        for t in threads: t.join()
-        got = len([l for l in log.read_text(encoding="utf-8").splitlines() if l.strip()])
-        want = N_THREADS * N_WRITES
-        verdict = "OK" if got == want else f"LOST {want - got} entries"
-        print(f"  {label:14}: {got}/{want} entries survived  -> {verdict}")

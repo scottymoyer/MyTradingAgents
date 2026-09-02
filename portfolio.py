@@ -81,7 +81,7 @@ def _load_yaml(path: Path, top_key: str) -> list[Any]:
         raise PortfolioError(f"{path.name}: file not found at {path}")
 
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
     except yaml.YAMLError as exc:
         raise PortfolioError(f"{path.name}: not valid YAML ({exc})") from exc

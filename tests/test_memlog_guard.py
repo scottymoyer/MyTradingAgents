@@ -2,10 +2,9 @@
 
 The guard exists to stop concurrent analysis threads from corrupting the single
 trading-memory file via racing read-modify-write cycles. These tests exercise
-the lock directly: without it the same workload loses entries (that failure is
-demonstrated by the module's own __main__ self-check); with it, none are lost.
-Pure logic — the lock path is redirected to a temp file so no tradingagents
-import or real memory-log file is touched.
+the lock directly: without it the racing read-modify-write workload loses
+entries; with it, every write survives. Pure logic — the lock path is redirected
+to a temp file so no tradingagents import or real memory-log file is touched.
 """
 
 import sys
@@ -60,20 +59,20 @@ def test_lock_prevents_lost_updates(isolated_lock):
 
 
 def test_lock_is_reentrant(isolated_lock):
-    """Guarded methods call one another, so the lock must nest without deadlock."""
-    with memlog_guard.memlog_lock():
-        with memlog_guard.memlog_lock():
-            with memlog_guard.memlog_lock():
-                depth_reached = memlog_guard._depth
+    """Guarded methods call one another, so the lock must nest without deadlock.
+
+    Three acquisitions held at once exercise the re-entrant path (depth 3).
+    """
+    with memlog_guard.memlog_lock(), memlog_guard.memlog_lock(), memlog_guard.memlog_lock():
+        depth_reached = memlog_guard._depth
     assert depth_reached == 3
     assert memlog_guard._depth == 0  # fully released
 
 
 def test_lock_releases_on_exception(isolated_lock):
     """An exception inside the guarded block must still release the lock."""
-    with pytest.raises(RuntimeError):
-        with memlog_guard.memlog_lock():
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), memlog_guard.memlog_lock():
+        raise RuntimeError("boom")
     assert memlog_guard._depth == 0
     # a fresh acquisition still works (not left locked)
     with memlog_guard.memlog_lock():

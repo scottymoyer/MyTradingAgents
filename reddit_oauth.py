@@ -207,7 +207,7 @@ if __name__ == "__main__":
         _get_token()
         print("token: acquired OK")
     except RedditAuthError as exc:
-        raise SystemExit(f"token: FAILED -- {exc}")
+        raise SystemExit(f"token: FAILED -- {exc}") from exc
 
     total = 0
     for sub in ("wallstreetbets", "stocks", "investing"):

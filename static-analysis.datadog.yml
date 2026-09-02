@@ -1,0 +1,12 @@
+# Datadog Static Analysis (SAST) ruleset configuration.
+#
+# Pinning Python rulesets explicitly (rather than relying on language
+# auto-detection) — auto-detect mis-fires on this repo and tries to fetch a C#
+# default ruleset that returns empty, which aborts the whole scan. An explicit
+# list scopes the analyzer to Python only. python-security is listed first as
+# it's the focus of the Code Security demo.
+rulesets:
+  - python-security
+  - python-best-practices
+  - python-code-style
+  - python-inclusive

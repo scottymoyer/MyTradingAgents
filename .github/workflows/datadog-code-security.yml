@@ -10,10 +10,13 @@ name: Datadog Code Security
 # key must carry the `code_analysis_read` scope).
 
 on:
+  # All branches, not just main. Datadog's results upload does NOT support the
+  # `pull_request` event — instead the analyzer runs on each push (diff-aware on
+  # non-default branches), and the Datadog GitHub App correlates those results
+  # to any open PR and posts findings as inline comments. So pushing a feature
+  # branch is what drives the PR-comment flow.
   push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:   # lets you re-run manually after adding the secrets
+  workflow_dispatch:   # manual re-run
 
 jobs:
   sast:

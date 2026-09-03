@@ -1,0 +1,68 @@
+name: Build & push image (EKS)
+
+# Builds the Datadog-instrumented amd64 image on a NATIVE amd64 runner (no QEMU
+# emulation) and pushes it to ECR. Auth to AWS is via GitHub OIDC assuming the
+# tradingagents-gha-ecr-push role — no long-lived AWS keys stored in GitHub.
+
+on:
+  push:
+    branches: [eks]
+    paths:
+      - "Dockerfile.ddog"
+      - "run_ddog.py"
+      - "portfolio.py"
+      - "memlog_guard.py"
+      - "reddit_oauth.py"
+      - "pyproject.toml"
+      - "tradingagents/**"
+      - "cli/**"
+      - ".github/workflows/build-image.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write   # required to request the OIDC token
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPO: tradingagents-ddog
+  ROLE_ARN: arn:aws:iam::963910217112:role/tradingagents-gha-ecr-push
+
+jobs:
+  build:
+    # GitHub-hosted ubuntu runners are amd64, so `docker build` is native — the
+    # exact arch EKS Fargate requires, with no emulation.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push (amd64)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$ECR_REPO"
+          SHA_SHORT="${GITHUB_SHA::7}"
+          docker build -f Dockerfile.ddog \
+            --build-arg DD_GIT_COMMIT_SHA="$GITHUB_SHA" \
+            --build-arg DD_GIT_REPOSITORY_URL="https://github.com/${GITHUB_REPOSITORY}.git" \
+            -t "$IMAGE:$SHA_SHORT" \
+            -t "$IMAGE:latest" \
+            .
+          docker push "$IMAGE:$SHA_SHORT"
+          docker push "$IMAGE:latest"
+          echo "### Pushed \`$ECR_REPO:$SHA_SHORT\` and \`:latest\` (amd64)" >> "$GITHUB_STEP_SUMMARY"

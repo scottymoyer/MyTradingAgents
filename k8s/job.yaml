@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tradingagents-run
+  namespace: tradingagents
+spec:
+  # Batch semantics: never silently repeat a run (each retry = more paid LLM
+  # calls). A failed run stays failed for inspection.
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: tradingagents
+        # Triggers the Datadog admission controller to inject an Agent sidecar
+        # (Phase 4). Harmless before the controller is installed.
+        agent.datadoghq.com/sidecar: fargate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: runner
+          # :latest for demo iteration; pin to an immutable :<gitsha> for real deploys.
+          image: 963910217112.dkr.ecr.us-east-2.amazonaws.com/tradingagents-ddog:latest
+          # Flags appended to the image ENTRYPOINT (ddtrace-run python run_ddog.py).
+          # 14-ticker screen; concurrency 10 (I/O-bound on OpenRouter, so it helps
+          # even on 2 vCPU). run_ddog auto-clamps to free RAM as a safety net.
+          args:
+            - "--mode"
+            - "watchlist"
+            - "--tickers"
+            - "AMZN,INTC,DE,HOOD,VRT,BE,NBIS,PURR-USD,MRAAY,COPX,SOXX,DRAM,GRID,PAVE"
+            - "--concurrency"
+            - "10"
+          envFrom:
+            - configMapRef:
+                name: tradingagents-config
+            - secretRef:
+                name: tradingagents-secrets
+          # Overlay the watchlist from a ConfigMap so editing it never needs an
+          # image rebuild (the baked copy is just a default). subPath replaces the
+          # single file without hiding the rest of the app dir.
+          volumeMounts:
+            - name: watchlist
+              mountPath: /home/appuser/app/watchlist.yaml
+              subPath: watchlist.yaml
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: watchlist
+          configMap:
+            name: tradingagents-watchlist

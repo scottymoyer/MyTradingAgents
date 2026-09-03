@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+#
+# Datadog-instrumented image for the TradingAgents batch runner (run_ddog.py).
+#
+# Parity target: `./run.sh` on the VM. The upstream ./Dockerfile builds the plain
+# interactive `tradingagents` CLI; THIS image instead runs the instrumented
+# preset runner under `ddtrace-run`, so APM + LLM Observability + Runtime Code
+# Security are active exactly as they are on the EC2 host.
+#
+# Build (bake the git commit so Datadog Source Code Integration deep-links work,
+# since a container has no .git for run.sh to read at runtime):
+#   docker build -f Dockerfile.ddog \
+#     --build-arg DD_GIT_COMMIT_SHA="$(git rev-parse HEAD)" \
+#     --build-arg DD_GIT_REPOSITORY_URL="$(git config --get remote.origin.url)" \
+#     -t tradingagents-ddog:local .
+#
+# Run (flags after the image name are passed straight to run_ddog.py):
+#   docker run --rm -e OPENROUTER_API_KEY -e DD_API_KEY \
+#     tradingagents-ddog:local --mode watchlist --tickers INTC --dry-run
+
+FROM python:3.12-slim AS builder
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /build
+COPY . .
+# Install the app package, then ddtrace pinned to the version verified on the VM.
+# ddtrace is a run.sh/runtime dependency deliberately kept out of pyproject.toml,
+# so it must be added explicitly here.
+RUN pip install --no-cache-dir . "ddtrace==4.12.2"
+
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Datadog telemetry defaults, mirroring run.sh. All overridable at deploy time
+# (K8s ConfigMap / `docker run -e`).
+ENV DD_SERVICE=tradingagents \
+    DD_ENV=prod \
+    DD_LLMOBS_ENABLED=1 \
+    DD_LLMOBS_ML_APP=tradingagents \
+    DD_IAST_ENABLED=true \
+    DD_APPSEC_SCA_ENABLED=true
+
+# Source Code Integration: run.sh resolves these from the local git checkout at
+# runtime, which is impossible inside an image (no .git), so bake them at build.
+ARG DD_GIT_COMMIT_SHA=""
+ARG DD_GIT_REPOSITORY_URL=""
+ENV DD_GIT_COMMIT_SHA=${DD_GIT_COMMIT_SHA} \
+    DD_GIT_REPOSITORY_URL=${DD_GIT_REPOSITORY_URL}
+
+# Non-root, with a writable home so all state under ~/.tradingagents (logs/,
+# cache/, memory/) works. Matches the upstream image's appuser convention.
+RUN useradd --create-home appuser \
+ && install -d -m 0755 -o appuser -g appuser /home/appuser/.tradingagents
+USER appuser
+WORKDIR /home/appuser/app
+
+# The instrumented runner and its loose top-level modules + portfolio inputs.
+# run_ddog.py is executed BY PATH (it is not an installed console script) and
+# imports memlog_guard/portfolio/reddit_oauth as bare top-level modules;
+# portfolio.py resolves the YAMLs via Path(__file__).parent. So all six files
+# must sit together in this one workdir.
+COPY --chown=appuser:appuser run_ddog.py portfolio.py memlog_guard.py reddit_oauth.py ./
+COPY --chown=appuser:appuser holdings.yaml watchlist.yaml ./
+
+# Flags supplied at `docker run` / via the K8s Job `args` are appended here.
+ENTRYPOINT ["ddtrace-run", "python", "run_ddog.py"]

@@ -1,0 +1,46 @@
+# Ephemeral EKS cluster for the containerized TradingAgents runner.
+#
+# Fargate-only (no managed EC2 nodes): serverless pods, nothing to patch or
+# scale, and nothing billing when idle except the control plane + one NAT.
+#
+#   Up:   eksctl create cluster -f infra/eksctl-cluster.yaml     (~15 min)
+#   Down: eksctl delete  cluster -f infra/eksctl-cluster.yaml    (RUN AFTER EVERY DEMO)
+#
+# Cost while up: ~$0.10/hr control plane + ~$0.045/hr NAT + per-second Fargate
+# pod time during a run. Deleting the cluster stops all of it.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: tradingagents
+  region: us-east-2
+  # Version omitted on purpose: eksctl picks a default that is in EKS "standard
+  # support", which avoids the 6x "extended support" control-plane fee. Pin one
+  # (e.g. version: "1.33") only if you need reproducibility.
+  tags:
+    project: tradingagents
+    lifecycle: ephemeral
+    owner: scott.moyer
+
+# Single NAT gateway (not one per AZ) — Fargate pods sit in private subnets and
+# need this for image pulls + OpenRouter/Datadog egress. One NAT keeps cost down.
+vpc:
+  nat:
+    gateway: Single
+
+# OIDC provider enables IRSA — required for the Datadog sidecar's cluster-agent
+# permissions and for the Phase 5 S3 access role.
+iam:
+  withOIDC: true
+
+# Fargate profiles: every pod whose namespace matches runs on Fargate. kube-system
+# is included so CoreDNS runs without any managed nodes; datadog + tradingagents
+# cover Phase 4 (agent) and Phase 3 (the Job).
+fargateProfiles:
+  - name: fp-system
+    selectors:
+      - namespace: kube-system
+  - name: fp-app
+    selectors:
+      - namespace: tradingagents
+      - namespace: datadog

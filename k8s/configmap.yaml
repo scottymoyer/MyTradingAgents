@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tradingagents-config
+  namespace: tradingagents
+# Non-secret, deploy-tunable env. The DD_* telemetry defaults (service, ml_app,
+# IAST/SCA, git SHA) are already baked into the image; this only carries things
+# worth overriding per-deploy without a rebuild.
+data:
+  # Same env as the VM so both land in one service view; the Datadog Agent adds
+  # the K8s tags (pod / namespace / cluster) that distinguish this deployment.
+  DD_ENV: "prod"
+  # Distinguish the containerized deployment from the VM in Datadog. Applied as a
+  # global tag on APM traces so you can split "VM vs EKS" for the same service.
+  DD_TAGS: "deployment_target:eks-fargate"
+  # LLM Obs submits agentless (app -> intake over HTTPS via NAT). The Fargate
+  # sidecar's unix-socket path did not deliver traces from the app, so we bypass
+  # it for LLM Obs. DD_API_KEY is provided to the app for this (see the Job).
+  DD_LLMOBS_AGENTLESS_ENABLED: "true"
+  DD_SITE: "datadoghq.com"

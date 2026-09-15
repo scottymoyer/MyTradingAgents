@@ -66,15 +66,15 @@ DEPTH_CHOICES = {"shallow": 1, "medium": 3, "deep": 5}
 # Default OpenRouter model IDs for the two engine roles. Overridable per run via
 # --deep-model / --quick-model (or --model to set both).
 #
-# GLM 5.3 Flash replaced the gpt-oss preset after a head-to-head on INTC: it
-# produced clearly stronger financial reasoning (caught an FCF-annualization
-# error gpt-oss took at face value, and actually used the reflection loop on the
-# prior decision's realized return) with zero structured-output failures, at
-# ~$0.04/ticker. The trade-off is speed -- ~3.5x slower (~28min vs ~8min for one
-# shallow ticker) -- so a full-watchlist run is a multi-hour job. Revert either
-# constant to "openai/gpt-oss-120b" / "openai/gpt-oss-20b" for the faster preset.
-DEFAULT_DEEP_MODEL = "z-ai/glm-5.3-flash"
-DEFAULT_QUICK_MODEL = "z-ai/glm-5.3-flash"
+# The gpt-oss preset is the default for speed (~8min vs ~28min per shallow
+# ticker), which keeps a full-watchlist run tractable. In a head-to-head on INTC,
+# GLM 5.3 Flash ("z-ai/glm-5.3-flash") produced clearly stronger financial
+# reasoning (caught an FCF-annualization error gpt-oss took at face value, and
+# used the reflection loop on the prior decision's realized return) with zero
+# structured-output failures -- but at ~3.5x the latency. Flip either constant to
+# "z-ai/glm-5.3-flash" when reasoning quality matters more than turnaround.
+DEFAULT_DEEP_MODEL = "openai/gpt-oss-120b"
+DEFAULT_QUICK_MODEL = "openai/gpt-oss-20b"
 
 # Memory model, corrected against measurement.
 #

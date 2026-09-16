@@ -15,6 +15,8 @@ on:
       - "reddit_oauth.py"
       - "results_store.py"
       - "mock_portfolio.py"
+      - "fargate_entry.sh"
+      - "s3_sync.py"
       - "pyproject.toml"
       - "tradingagents/**"
       - "cli/**"

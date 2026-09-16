@@ -25,10 +25,11 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /build
 COPY . .
-# Install the app package, then ddtrace pinned to the version verified on the VM.
-# ddtrace is a run.sh/runtime dependency deliberately kept out of pyproject.toml,
-# so it must be added explicitly here.
-RUN pip install --no-cache-dir . "ddtrace==4.12.2"
+# Install the app package, then ddtrace pinned to the version verified on the VM,
+# plus boto3 for the Fargate S3 report upload / watchlist pull (s3_sync.py).
+# ddtrace + boto3 are run.sh/container runtime deps deliberately kept out of
+# pyproject.toml, so they must be added explicitly here.
+RUN pip install --no-cache-dir . "ddtrace==4.12.2" "boto3>=1.34"
 
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -65,7 +66,12 @@ WORKDIR /home/appuser/app
 # portfolio.py resolves the YAMLs via Path(__file__).parent. So all six files
 # must sit together in this one workdir.
 COPY --chown=appuser:appuser run_ddog.py portfolio.py memlog_guard.py reddit_oauth.py results_store.py mock_portfolio.py ./
+# Fargate batch chain: fargate_entry.sh is set as the ECS task's entryPoint
+# override (analysis -> resolve -> report -> S3), and s3_sync.py does the boto3
+# report upload + watchlist pull. Not used by the default ENTRYPOINT below.
+COPY --chown=appuser:appuser fargate_entry.sh s3_sync.py ./
 COPY --chown=appuser:appuser holdings.yaml watchlist.yaml ./
 
 # Flags supplied at `docker run` / via the K8s Job `args` are appended here.
+# The ECS Fargate task def overrides this ENTRYPOINT with fargate_entry.sh.
 ENTRYPOINT ["ddtrace-run", "python", "run_ddog.py"]

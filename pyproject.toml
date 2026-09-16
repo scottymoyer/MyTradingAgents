@@ -39,6 +39,11 @@ dev = [
     "pytest>=8.0",
     "pytest-subtests>=0.13",
 ]
+# Postgres backend for the results ledger (results_store.py). Optional — the SQLite
+# default needs nothing extra. Install with: pip install ".[postgres]".
+postgres = [
+    "psycopg[binary]>=3.2",
+]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
 # stays lean: pip install "tradingagents[bedrock]".
 bedrock = [

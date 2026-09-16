@@ -29,6 +29,12 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
 PY="$REPO_DIR/.venv/bin/python"
+
+# Load data-source creds + durable-store config (TRADINGAGENTS_DATABASE_URL,
+# TRADINGAGENTS_S3_BUCKET, API keys) so BOTH run.sh and the direct mock_portfolio
+# resolve/report calls below hit the same (Postgres) backend.
+[ -f "$HOME/.tradingagents.env" ] && { set -a; . "$HOME/.tradingagents.env"; set +a; }
+S3_BUCKET="${TRADINGAGENTS_S3_BUCKET:-tradingagents-963910217112-results}"
 LOG_DIR="$HOME/.tradingagents/logs/scheduled"
 LOCK="$HOME/.tradingagents/scheduled.lock"
 mkdir -p "$LOG_DIR" "$(dirname "$LOCK")"
@@ -59,6 +65,14 @@ fi
 
     echo "=== scorecard ==="
     "$PY" "$REPO_DIR/mock_portfolio.py" report || true
+
+    echo "=== sync reports to s3://$S3_BUCKET/reports/ ==="
+    if command -v aws >/dev/null 2>&1; then
+        aws s3 sync "$HOME/.tradingagents/logs/reports" "s3://$S3_BUCKET/reports/" \
+            --only-show-errors || echo ">>> s3 sync failed; continuing"
+    else
+        echo ">>> aws CLI not found; skipping s3 sync"
+    fi
 
     echo "=== scheduled run done $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
 } >>"$LOG" 2>&1

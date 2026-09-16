@@ -11,7 +11,8 @@ the LLM is invoked and injects them into the prompt as structured blocks:
   1. News headlines     — Yahoo Finance (institutional framing)
   2. StockTwits messages — retail-trader posts indexed by cashtag, with
                            user-labeled Bullish/Bearish sentiment tags
-  3. Reddit posts        — r/wallstreetbets, r/stocks, r/investing
+  3. X/Twitter posts     — recent cashtag posts via twitterapi.io (unlabeled;
+                           sentiment inferred, weighted by engagement)
 
 The agent does not use tool-calling; the data is in the prompt from
 turn 0. Output uses the structured-output pattern (json_schema for
@@ -40,8 +41,8 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
-from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.dataflows.x_twitter import fetch_x_posts
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -51,7 +52,7 @@ def _seven_days_back(trade_date: str) -> str:
 def create_sentiment_analyst(llm):
     """Create a sentiment analyst node for the trading graph.
 
-    Pre-fetches news + StockTwits + Reddit data, injects them into the
+    Pre-fetches news + StockTwits + X/Twitter data, injects them into the
     prompt as structured blocks, and produces a deterministic sentiment
     report via structured output (with a free-text fallback for providers
     that do not support it).
@@ -69,7 +70,7 @@ def create_sentiment_analyst(llm):
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
         stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-        reddit_block = fetch_reddit_posts(ticker)
+        x_block = fetch_x_posts(ticker, limit=30)
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -77,7 +78,7 @@ def create_sentiment_analyst(llm):
             end_date=end_date,
             news_block=news_block,
             stocktwits_block=stocktwits_block,
-            reddit_block=reddit_block,
+            x_block=x_block,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -130,7 +131,7 @@ def _build_system_message(
     end_date: str,
     news_block: str,
     stocktwits_block: str,
-    reddit_block: str,
+    x_block: str,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
@@ -151,12 +152,12 @@ Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish /
 {stocktwits_block}
 <end_of_stocktwits>
 
-### Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)
-Community discussion. Engagement signal via upvote score and comment count. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
+### X/Twitter posts — cashtag ${ticker}, past 7 days (via twitterapi.io)
+Fast-moving retail signal. X posts carry NO explicit sentiment label, so infer direction from the language, emoji, and context of each post. Posts are shown most-engaged first with per-post engagement (♥ likes, ⟲ reposts); a ✓ marks blue-verified authors.
 
-<start_of_reddit>
-{reddit_block}
-<end_of_reddit>
+<start_of_x>
+{x_block}
+<end_of_x>
 
 ## How to analyze this data (best practices)
 
@@ -164,13 +165,13 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 
 2. **Look for cross-source divergences.** If news framing is bearish but StockTwits is overwhelmingly bullish, that mismatch is itself a signal — it can mean retail is leaning into a thesis the news flow hasn't caught up to (or vice versa, that retail is chasing while institutions are cautious).
 
-3. **Weight Reddit posts by engagement.** A 400-upvote / 200-comment thread reflects community attention; a 3-upvote post is noise. Read the body excerpts for context — the title alone often misleads.
+3. **Weight X posts by engagement, and infer their (unlabeled) sentiment.** A post with hundreds of likes/reposts reflects real attention; a zero-engagement post is noise. Since X posts have no Bullish/Bearish tag, read each one's language and context to judge its direction, and weight blue-verified / high-engagement voices above anonymous low-engagement ones.
 
 4. **Distinguish opinion from event.** A news headline ("Nvidia announces $500M Corning deal") is an event; a StockTwits post ("buying NVDA, this is going to moon") is opinion. Both are inputs but should be weighted differently in your conclusions.
 
 5. **Identify recurring narrative themes.** What topic keeps coming up across sources? That's the dominant narrative driving current sentiment.
 
-6. **Be honest about data limits.** If StockTwits returned only a handful of messages, or one or more sources returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this explicitly in the `confidence` field and the narrative. If the sources are silent on a given subreddit, say so.
+6. **Be honest about data limits.** If StockTwits returned only a handful of messages, or one or more sources returned a `<…>` placeholder (unavailable / disabled / no posts found), the sentiment read is less robust — flag this explicitly in the `confidence` field and the narrative.
 
 7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
 

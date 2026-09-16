@@ -51,6 +51,7 @@ from datetime import datetime, timedelta
 
 import memlog_guard
 import portfolio
+import results_store
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
@@ -401,6 +402,49 @@ def _print_group(title: str, rows: list[dict], results: dict[str, dict], is_watc
             print(f"  report   : {res['report_path']}")
 
 
+def _dur(res: dict) -> float | None:
+    if "t_start" in res and "t_end" in res:
+        return round(res["t_end"] - res["t_start"], 1)
+    return None
+
+
+def _build_ledger_rows(holdings_rows: list[dict], watchlist_rows: list[dict],
+                       results: dict[str, dict]) -> list[dict]:
+    """Flatten resolved rows + per-ticker results into results_store row dicts,
+    mirroring the status logic of _print_group."""
+    out = []
+    for group_name, rows in (("holdings", holdings_rows), ("watchlist", watchlist_rows)):
+        for row in rows:
+            res = results.get(row["ticker"])
+            rec = {"ticker": row["ticker"], "asset_type": row.get("asset_type"),
+                   "group_name": group_name}
+            if res is None:
+                rec.update(status="not_run", decision=None, error=None,
+                           report_path=None, duration_s=None)
+            elif res.get("error"):
+                rec.update(status="failed", decision=None, error=res["error"],
+                           report_path=None, duration_s=_dur(res))
+            else:
+                rec.update(status="ok", decision=res["decision"], error=None,
+                           report_path=str(res["report_path"]), duration_s=_dur(res))
+            out.append(rec)
+    return out
+
+
+def _record_results(*, run_id, trade_date, args, deep_model, quick_model, git_sha,
+                    rows: list[dict]) -> None:
+    """Write the run's decisions to the results ledger. Guarded so a ledger
+    failure can never break a (paid) run."""
+    try:
+        n = results_store.record_run(
+            run_id=run_id, trade_date=trade_date, mode=args.mode, depth=args.depth,
+            deep_model=deep_model, quick_model=quick_model, git_sha=git_sha, rows=rows,
+        )
+        print(f"\nRecorded {n} decision(s) to the results ledger.")
+    except Exception as exc:
+        print(f"\nnote: results-ledger write failed ({type(exc).__name__}: {exc}); continuing.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Preset, Datadog-instrumented TradingAgents run (OpenRouter).",
@@ -465,6 +509,9 @@ def main() -> None:
     deep_model = args.model or args.deep_model
     quick_model = args.model or args.quick_model
     config = build_config(depth, deep_model, quick_model)
+    run_started = datetime.now()
+    run_id = f"{trade_date}__{run_started:%Y%m%d_%H%M%S}"
+    git_sha = os.environ.get("DD_GIT_COMMIT_SHA")
 
     print_resolved_config(config)
     print(f"mode                   = {args.mode}")
@@ -491,11 +538,20 @@ def main() -> None:
             graph = TradingAgentsGraph(
                 selected_analysts=SELECTED_ANALYSTS, config=config, debug=False,
             )
+            _t0 = time.monotonic()
             final_state, decision = graph.propagate(ticker, trade_date)
             print("\n=== FINAL DECISION ===")
             print(decision)
             report_path = graph.save_reports(final_state, ticker)
             print(f"\nReports written to: {report_path}")
+            _record_results(
+                run_id=run_id, trade_date=trade_date, args=args,
+                deep_model=deep_model, quick_model=quick_model, git_sha=git_sha,
+                rows=[{"ticker": ticker, "asset_type": "stock", "group_name": "single",
+                       "status": "ok", "decision": decision,
+                       "report_path": str(report_path),
+                       "duration_s": round(time.monotonic() - _t0, 1)}],
+            )
             return
 
         # ---- multi-ticker modes -------------------------------------------
@@ -580,6 +636,12 @@ def main() -> None:
 
         _print_group("Current Holdings", holdings_rows, results, is_watchlist=False)
         _print_group("Watchlist / Candidates", watchlist_rows, results, is_watchlist=True)
+
+        _record_results(
+            run_id=run_id, trade_date=trade_date, args=args,
+            deep_model=deep_model, quick_model=quick_model, git_sha=git_sha,
+            rows=_build_ledger_rows(holdings_rows, watchlist_rows, results),
+        )
 
         # ------------------------------------------------------------------
         # TODO(portfolio-fit): FUTURE PORTFOLIO-FIT LAYER GOES HERE.

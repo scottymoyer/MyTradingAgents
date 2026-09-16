@@ -64,7 +64,7 @@ WORKDIR /home/appuser/app
 # imports memlog_guard/portfolio/reddit_oauth as bare top-level modules;
 # portfolio.py resolves the YAMLs via Path(__file__).parent. So all six files
 # must sit together in this one workdir.
-COPY --chown=appuser:appuser run_ddog.py portfolio.py memlog_guard.py reddit_oauth.py results_store.py ./
+COPY --chown=appuser:appuser run_ddog.py portfolio.py memlog_guard.py reddit_oauth.py results_store.py mock_portfolio.py ./
 COPY --chown=appuser:appuser holdings.yaml watchlist.yaml ./
 
 # Flags supplied at `docker run` / via the K8s Job `args` are appended here.

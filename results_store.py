@@ -176,6 +176,34 @@ def latest_run(db_path=None) -> list[dict]:
         (rows[0]["run_id"],), db_path)
 
 
+def unresolved_ok_decisions(db_path=None) -> list[dict]:
+    """Decisions that succeeded but have no realized return yet (grading candidates)."""
+    return _query(
+        "SELECT * FROM decisions WHERE status = 'ok' AND realized_return IS NULL "
+        "ORDER BY trade_date ASC, ticker ASC", (), db_path)
+
+
+def resolved_decisions(db_path=None) -> list[dict]:
+    """Decisions with a realized return attached (for the portfolio/scorecard)."""
+    return _query(
+        "SELECT * FROM decisions WHERE realized_return IS NOT NULL "
+        "ORDER BY trade_date ASC, ticker ASC", (), db_path)
+
+
+def attach_outcome(run_id: str, ticker: str, *, entry_price, realized_return,
+                   outcome_date, db_path=None) -> None:
+    """Fill the outcome columns for one decision (idempotent overwrite)."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE decisions SET entry_price = ?, realized_return = ?, outcome_date = ? "
+            "WHERE run_id = ? AND ticker = ?",
+            (entry_price, realized_return, outcome_date, run_id, ticker))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _print_table(rows: list[dict]) -> None:
     if not rows:
         print("(no decisions recorded yet)")

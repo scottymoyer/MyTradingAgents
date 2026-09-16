@@ -51,7 +51,6 @@ from datetime import datetime, timedelta
 
 import memlog_guard
 import portfolio
-import reddit_oauth
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
@@ -237,6 +236,9 @@ def print_resolved_config(config: dict) -> None:
     if not os.environ.get("FRED_API_KEY"):
         print("  note: FRED_API_KEY unset -> macro indicators unavailable this run "
               "(free key: https://fred.stlouisfed.org/docs/api/api_key.html)")
+    if not os.environ.get("TWITTERAPI_IO_KEY"):
+        print("  note: TWITTERAPI_IO_KEY unset -> X/Twitter sentiment unavailable this run "
+              "(key: https://twitterapi.io)")
 
 
 def _apply_filters(tickers: list[str], only: set[str] | None, limit: int | None) -> list[str]:
@@ -453,10 +455,6 @@ def main() -> None:
         help="Resolve tickers/config and init the tracer, then exit WITHOUT any LLM calls.",
     )
     args = parser.parse_args()
-
-    # Swap the sentiment analyst's Reddit source to the authenticated API when
-    # credentials are present; no-op (keeps anonymous RSS) when they are not.
-    reddit_oauth.install()
 
     # Serialise the shared memory-log file. Its read-modify-write cycles and
     # single fixed .tmp path corrupt/lose entries under concurrency.

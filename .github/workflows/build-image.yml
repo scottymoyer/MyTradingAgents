@@ -13,6 +13,7 @@ on:
       - "portfolio.py"
       - "memlog_guard.py"
       - "reddit_oauth.py"
+      - "results_store.py"
       - "pyproject.toml"
       - "tradingagents/**"
       - "cli/**"

@@ -44,6 +44,12 @@ dev = [
 bedrock = [
     "langchain-aws>=1.5.0",
 ]
+# Postgres backend for the results ledger (results_store.py). Optional — the SQLite
+# default needs nothing extra. Install with: pip install ".[postgres]". The Fargate
+# image installs psycopg directly (see Dockerfile.ddog).
+postgres = [
+    "psycopg[binary]>=3.2",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"

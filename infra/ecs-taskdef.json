@@ -1,0 +1,72 @@
+{
+  "family": "tradingagents-run",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "__EXEC_ROLE_ARN__",
+  "taskRoleArn": "__TASK_ROLE_ARN__",
+  "containerDefinitions": [
+    {
+      "name": "runner",
+      "image": "__IMAGE__",
+      "essential": true,
+      "entryPoint": ["/bin/bash", "/home/appuser/app/fargate_entry.sh"],
+      "command": ["--mode", "watchlist", "--concurrency", "10"],
+      "dependsOn": [
+        { "containerName": "datadog-agent", "condition": "START" }
+      ],
+      "environment": [
+        { "name": "TRADINGAGENTS_S3_BUCKET", "value": "__BUCKET__" },
+        { "name": "AWS_DEFAULT_REGION", "value": "__REGION__" },
+        { "name": "DD_AGENT_HOST", "value": "127.0.0.1" },
+        { "name": "DD_TRACE_AGENT_URL", "value": "http://127.0.0.1:8126" },
+        { "name": "DD_LLMOBS_AGENTLESS_ENABLED", "value": "0" },
+        { "name": "DD_ENV", "value": "prod" },
+        { "name": "DD_SERVICE", "value": "tradingagents" }
+      ],
+      "secrets": [
+        { "name": "OPENROUTER_API_KEY",          "valueFrom": "__SECRET_ARN__:OPENROUTER_API_KEY::" },
+        { "name": "TWITTERAPI_IO_KEY",           "valueFrom": "__SECRET_ARN__:TWITTERAPI_IO_KEY::" },
+        { "name": "TRADINGAGENTS_DATABASE_URL",  "valueFrom": "__SECRET_ARN__:TRADINGAGENTS_DATABASE_URL::" },
+        { "name": "FRED_API_KEY",                "valueFrom": "__SECRET_ARN__:FRED_API_KEY::" },
+        { "name": "ALPHA_VANTAGE_API_KEY",       "valueFrom": "__SECRET_ARN__:ALPHA_VANTAGE_API_KEY::" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "__LOG_GROUP__",
+          "awslogs-region": "__REGION__",
+          "awslogs-stream-prefix": "runner"
+        }
+      }
+    },
+    {
+      "name": "datadog-agent",
+      "image": "public.ecr.aws/datadog/agent:7",
+      "essential": false,
+      "environment": [
+        { "name": "DD_SITE", "value": "datadoghq.com" },
+        { "name": "DD_ECS_FARGATE", "value": "true" },
+        { "name": "DD_APM_ENABLED", "value": "true" },
+        { "name": "DD_APM_NON_LOCAL_TRAFFIC", "value": "true" },
+        { "name": "DD_DOGSTATSD_NON_LOCAL_TRAFFIC", "value": "true" }
+      ],
+      "secrets": [
+        { "name": "DD_API_KEY", "valueFrom": "__SECRET_ARN__:DD_API_KEY::" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "__LOG_GROUP__",
+          "awslogs-region": "__REGION__",
+          "awslogs-stream-prefix": "datadog"
+        }
+      }
+    }
+  ]
+}

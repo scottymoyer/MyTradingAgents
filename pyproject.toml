@@ -49,6 +49,12 @@ postgres = [
 bedrock = [
     "langchain-aws>=1.5.0",
 ]
+# Local results dashboard (dashboard.py): a Streamlit UI over the Postgres ledger +
+# S3 reports/watchlist. Optional — install with: pip install ".[dashboard]".
+dashboard = [
+    "streamlit>=1.40",
+    "boto3>=1.34",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"

@@ -179,10 +179,14 @@ def view_performance() -> None:
               delta=f"{(sim['total_return'] - sim['bench_return']) * 100:+.2f}% vs SPY")
 
     st.subheader("Signal by rating tier")
+    st.caption("Hit = the price moved the way the call pointed (up for Buy/Overweight, "
+               "down for Underweight/Sell). Hold makes no directional call.")
+    order = [t for t in mock_portfolio._TIER_ORDER if t in sc["by_tier"]]
+    order += [t for t in sc["by_tier"] if t not in order]
     tier = pd.DataFrame(
         [{"tier": t, "n": v["n"], "avg_return_%": round(v["avg_return"] * 100, 2),
-          "hit_rate_%": round(v["hit_rate"] * 100, 1)}
-         for t, v in sc["by_tier"].items()]
+          "hit_rate_%": None if v["hit_rate"] is None else round(v["hit_rate"] * 100, 1)}
+         for t, v in ((t, sc["by_tier"][t]) for t in order)]
     )
     st.dataframe(tier, use_container_width=True, hide_index=True)
 
@@ -193,13 +197,17 @@ def view_performance() -> None:
             columns={"equity": "Portfolio", "bench_equity": "SPY"})
         st.line_chart(chart)
 
-    w, ln = st.columns(2)
-    w.subheader("Top winners")
-    w.dataframe(pd.DataFrame(sc["top_winners"])[["ticker", "decision", "realized_return"]],
-                use_container_width=True, hide_index=True)
-    ln.subheader("Top losers")
-    ln.dataframe(pd.DataFrame(sc["top_losers"])[["ticker", "decision", "realized_return"]],
-                 use_container_width=True, hide_index=True)
+    cols = ["ticker", "decision", "trade_date", "realized_return"]
+    best, worst = st.columns(2)
+    best.subheader("Best calls")
+    worst.subheader("Worst calls")
+    for col, calls in ((best, sc["best_calls"]), (worst, sc["worst_calls"])):
+        if calls:
+            col.dataframe(pd.DataFrame(calls)[cols], use_container_width=True, hide_index=True)
+        else:
+            col.caption("—")
+    st.caption("Ranked by return × call direction: an Underweight on a stock that "
+               "rallied is a bad call even though the stock went up.")
 
 
 # ----------------------------------------------------------- Watchlist view

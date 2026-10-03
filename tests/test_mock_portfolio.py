@@ -68,16 +68,32 @@ def test_simulate_is_long_only_and_compounds(tmp_path, monkeypatch):
     assert sim["curve"][0]["n_long"] == 1 and sim["curve"][1]["n_long"] == 2
 
 
-def test_scorecard_by_tier(tmp_path):
+def test_scorecard_by_tier_is_direction_aware(tmp_path):
     db = tmp_path / "results.db"
     _seed(db, "R1", "2026-08-01",
-          [("A", "Buy", 0.10), ("B", "Buy", -0.05), ("C", "Sell", -0.10), ("D", "Hold", 0.02)])
+          [("A", "Buy", 0.10), ("B", "Buy", -0.05), ("C", "Sell", -0.10),
+           ("D", "Hold", 0.02), ("E", "Underweight", 0.20)])
     sc = mock_portfolio.scorecard(db_path=db)
-    assert sc["n_resolved"] == 4
+    assert sc["n_resolved"] == 5
     buy = sc["by_tier"]["Buy"]
     assert buy["n"] == 2
     assert round(buy["avg_return"], 4) == 0.025   # (0.10 + -0.05) / 2
-    assert buy["hit_rate"] == 0.5                 # 1 of 2 positive
-    assert sc["by_tier"]["Sell"]["hit_rate"] == 0.0
-    assert sc["top_winners"][0]["ticker"] == "A"  # +10% best
-    assert sc["top_losers"][0]["ticker"] == "C"   # -10% worst
+    assert buy["hit_rate"] == 0.5                 # A went up (hit), B went down (miss)
+    assert sc["by_tier"]["Sell"]["hit_rate"] == 1.0          # C fell: the Sell was right
+    assert sc["by_tier"]["Underweight"]["hit_rate"] == 0.0   # E rallied: the call was wrong
+    assert sc["by_tier"]["Hold"]["hit_rate"] is None         # no directional call
+
+
+def test_best_and_worst_calls_rank_by_call_direction(tmp_path):
+    db = tmp_path / "results.db"
+    _seed(db, "R1", "2026-08-01",
+          [("A", "Buy", 0.10), ("B", "Buy", -0.05), ("C", "Sell", -0.10),
+           ("D", "Hold", 0.02), ("E", "Underweight", 0.20)])
+    sc = mock_portfolio.scorecard(db_path=db)
+    best = [d["ticker"] for d in sc["best_calls"]]
+    worst = [d["ticker"] for d in sc["worst_calls"]]
+    assert best[0] in ("A", "C")       # Buy +10% and Sell -10% are both +10% right
+    assert worst[0] == "E"             # Underweight +20% is the worst call, not a "winner"
+    assert "E" not in best
+    assert "D" not in best + worst     # Hold is never a best/worst call
+    assert not set(best) & set(worst)  # disjoint

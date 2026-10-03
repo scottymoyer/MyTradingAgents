@@ -39,6 +39,8 @@ BENCHMARK = "SPY"
 # Long-only, equal-weight book: only these ratings are held.
 _LONG_DECISIONS = {"Buy", "Overweight"}
 _TIER_ORDER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
+# Direction each rating points: +1 bullish, -1 bearish, 0 = no directional call.
+_DIRECTION = {"Buy": 1, "Overweight": 1, "Hold": 0, "Underweight": -1, "Sell": -1}
 
 
 def nday_return(ticker: str, trade_date: str,
@@ -129,23 +131,32 @@ def simulate(capital: float = DEFAULT_CAPITAL,
 
 
 def scorecard(db_path=None) -> dict:
-    """Per-tier count / average realized return / hit-rate, plus winners & losers."""
+    """Per-tier count / average realized return / direction-aware hit-rate, plus the
+    best and worst calls.
+
+    A hit means the price moved the way the call pointed: up for Buy/Overweight,
+    down for Underweight/Sell. Hold makes no directional call, so its hit_rate is
+    None. Best/worst calls rank by call-signed return (return x direction), so an
+    Underweight on a stock that rallied is a bad call, not a "winner"."""
     rows = results_store.resolved_decisions(db_path=db_path)
     tiers: dict[str, dict] = {}
     for d in rows:
-        s = tiers.setdefault(d["decision"] or "?", {"n": 0, "sum": 0.0, "wins": 0})
+        tier = d["decision"] or "?"
+        s = tiers.setdefault(tier, {"n": 0, "sum": 0.0, "hits": 0})
         s["n"] += 1
         s["sum"] += d["realized_return"]
-        s["wins"] += 1 if d["realized_return"] > 0 else 0
-    by_tier = {t: {"n": s["n"], "avg_return": s["sum"] / s["n"], "hit_rate": s["wins"] / s["n"]}
+        s["hits"] += 1 if _DIRECTION.get(tier, 0) * d["realized_return"] > 0 else 0
+    by_tier = {t: {"n": s["n"], "avg_return": s["sum"] / s["n"],
+                   "hit_rate": s["hits"] / s["n"] if _DIRECTION.get(t, 0) else None}
                for t, s in tiers.items()}
-    ranked = sorted(rows, key=lambda d: d["realized_return"], reverse=True)
-    top_winners = ranked[:3]
-    # Disjoint from winners, so a small decision set never lists the same name as
-    # both a winner and a loser.
-    top_losers = [d for d in reversed(ranked) if d not in top_winners][:3]
+    calls = [d for d in rows if _DIRECTION.get(d["decision"], 0)]  # directional only
+    ranked = sorted(calls, key=lambda d: _DIRECTION[d["decision"]] * d["realized_return"],
+                    reverse=True)
+    best_calls = ranked[:3]
+    # Disjoint from best, so a small decision set never lists the same call twice.
+    worst_calls = [d for d in reversed(ranked) if d not in best_calls][:3]
     return {"n_resolved": len(rows), "by_tier": by_tier,
-            "top_winners": top_winners, "top_losers": top_losers}
+            "best_calls": best_calls, "worst_calls": worst_calls}
 
 
 def _report(capital: float, horizon_days: int) -> None:
@@ -167,12 +178,14 @@ def _report(capital: float, horizon_days: int) -> None:
     for tier in _TIER_ORDER:
         s = sc["by_tier"].get(tier)
         if s:
-            print(f"  {tier:<12} {s['n']:>3} {s['avg_return'] * 100:>10.1f}% {s['hit_rate'] * 100:>8.0f}%")
-    if sc["top_winners"]:
-        print("\n  Top winners / losers:")
-        for d in sc["top_winners"][:3]:
+            hr = f"{s['hit_rate'] * 100:>8.0f}%" if s["hit_rate"] is not None else f"{'—':>9}"
+            print(f"  {tier:<12} {s['n']:>3} {s['avg_return'] * 100:>10.1f}% {hr}")
+    print("  (hit = price moved the way the call pointed; Hold makes no directional call)")
+    if sc["best_calls"]:
+        print("\n  Best / worst calls (ranked by return x call direction):")
+        for d in sc["best_calls"]:
             print(f"    + {d['ticker']:<8} {d['decision']:<12} {d['realized_return'] * 100:+.1f}%")
-        for d in sc["top_losers"][:3]:
+        for d in sc["worst_calls"]:
             print(f"    - {d['ticker']:<8} {d['decision']:<12} {d['realized_return'] * 100:+.1f}%")
 
 

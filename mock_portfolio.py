@@ -39,6 +39,9 @@ BENCHMARK = "SPY"
 # Long-only, equal-weight book: only these ratings are held.
 _LONG_DECISIONS = {"Buy", "Overweight"}
 _TIER_ORDER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
+# Run modes that analyze the full book (and so form a portfolio). "single" runs are
+# one-ticker tests/checks and "holdings" is a partial view, so neither is simulated.
+_PORTFOLIO_MODES = {"watchlist", "all"}
 # Direction each rating points: +1 bullish, -1 bearish, 0 = no directional call.
 _DIRECTION = {"Buy": 1, "Overweight": 1, "Hold": 0, "Underweight": -1, "Sell": -1}
 
@@ -96,33 +99,74 @@ def resolve(horizon_days: int = DEFAULT_HORIZON_DAYS, db_path=None) -> int:
 
 
 def _cohorts(rows: list[dict]) -> list[tuple[str, list[dict]]]:
-    """Group resolved decisions by run_id, ordered chronologically by trade_date."""
+    """Group resolved decisions into one cohort per trade_date, oldest first.
+
+    Only full-book runs count (``_PORTFOLIO_MODES``): single-ticker / holdings-only
+    runs are tests or partial views, not the portfolio the model would run. If two
+    full-book runs share a trade_date, the most recently recorded one wins, so a
+    re-run never double-counts a date."""
     by_run: dict[str, list[dict]] = {}
     for d in rows:
-        by_run.setdefault(d["run_id"], []).append(d)
-    return sorted(by_run.items(), key=lambda kv: (kv[1][0]["trade_date"], kv[0]))
+        if d.get("mode") in _PORTFOLIO_MODES:
+            by_run.setdefault(d["run_id"], []).append(d)
+    by_date: dict[str, tuple[str, list[dict]]] = {}
+    for run_id, decisions in sorted(by_run.items(),
+                                    key=lambda kv: max(d["recorded_at"] for d in kv[1])):
+        by_date[decisions[0]["trade_date"]] = (run_id, decisions)
+    return [by_date[date] for date in sorted(by_date)]
 
 
 def simulate(capital: float = DEFAULT_CAPITAL,
              horizon_days: int = DEFAULT_HORIZON_DAYS, db_path=None) -> dict:
-    """Compound each run's equal-weight long book (Buy/Overweight) into an equity
-    curve, alongside a same-window SPY benchmark curve."""
-    cohorts = _cohorts(results_store.resolved_decisions(db_path=db_path))
-    equity = bench_equity = capital
-    curve = []
-    for run_id, decisions in cohorts:
-        longs = [d for d in decisions if d["decision"] in _LONG_DECISIONS]
-        cohort_ret = sum(d["realized_return"] for d in longs) / len(longs) if longs else 0.0
-        equity *= (1 + cohort_ret)
+    """Two honest views of the equal-weight long book (Buy/Overweight) vs SPY.
+
+    * **Per-window excess** — for every graded run, the long book's return minus
+      SPY's over the same window, averaged with no compounding. This is the "does
+      the long book beat the market" signal, and it uses every run.
+    * **Equity curve** — a strategy you could actually run with one pot of money:
+      buy a run's longs, hold ``horizon_days``, sell, then roll into the first run
+      on/after the exit date. Runs that start while the money is still tied up are
+      skipped. Runs are ~2-3 trading days apart but each book is held 5, so
+      chaining *every* run would compound overlapping windows and count the same
+      market days several times over.
+
+    A run with no longs holds cash (0%) for its window — that is the model's call.
+    A run whose SPY window can't be priced is left out rather than assumed flat.
+    """
+    windows = []
+    for run_id, decisions in _cohorts(results_store.resolved_decisions(db_path=db_path)):
         trade_date = decisions[0]["trade_date"]
         spy = nday_return(BENCHMARK, trade_date, horizon_days)
-        spy_ret = spy["raw_return"] if spy else 0.0
-        bench_equity *= (1 + spy_ret)
-        curve.append({"run_id": run_id, "trade_date": trade_date, "n_long": len(longs),
-                      "cohort_return": cohort_ret, "equity": equity,
-                      "spy_return": spy_ret, "bench_equity": bench_equity})
+        if spy is None:
+            logger.warning("no %s benchmark for %s window; skipping run %s",
+                           BENCHMARK, trade_date, run_id)
+            continue
+        longs = [d for d in decisions if d["decision"] in _LONG_DECISIONS]
+        book = sum(d["realized_return"] for d in longs) / len(longs) if longs else 0.0
+        windows.append({"run_id": run_id, "trade_date": trade_date,
+                        "exit_date": spy["exit_date"], "n_long": len(longs),
+                        "cohort_return": book, "spy_return": spy["raw_return"],
+                        "excess_return": book - spy["raw_return"], "in_curve": False})
+
+    equity = bench_equity = capital
+    curve, free_from = [], None
+    for w in windows:
+        if free_from is not None and w["trade_date"] < free_from:
+            continue                      # capital still in the previous book
+        w["in_curve"] = True
+        equity *= 1 + w["cohort_return"]
+        bench_equity *= 1 + w["spy_return"]
+        curve.append({**w, "equity": equity, "bench_equity": bench_equity})
+        free_from = w["exit_date"]
+
+    excess = [w["excess_return"] for w in windows]
     return {
-        "capital": capital, "horizon_days": horizon_days, "n_cohorts": len(cohorts),
+        "capital": capital, "horizon_days": horizon_days,
+        "n_windows": len(windows),
+        "avg_excess_return": sum(excess) / len(excess) if excess else None,
+        "n_beat": sum(1 for x in excess if x > 0),
+        "windows": windows,
+        "n_held": len(curve),
         "final_equity": equity, "final_bench_equity": bench_equity,
         "total_return": equity / capital - 1 if capital else 0.0,
         "bench_return": bench_equity / capital - 1 if capital else 0.0,
@@ -167,12 +211,20 @@ def _report(capital: float, horizon_days: int) -> None:
         print(f"No resolved decisions yet. Run `resolve` once decisions mature "
               f"({horizon_days} trading days after their trade_date).")
         return
-    tr, br = sim["total_return"] * 100, sim["bench_return"] * 100
-    print(f"  cohorts (runs)  : {sim['n_cohorts']}")
-    print(f"  start capital   : ${capital:,.0f}")
-    print(f"  final equity    : ${sim['final_equity']:,.0f}  ({tr:+.1f}%)")
-    print(f"  SPY benchmark   : ${sim['final_bench_equity']:,.0f}  ({br:+.1f}%)")
-    print(f"  vs SPY          : {tr - br:+.1f} pts")
+    if sim["n_windows"]:
+        print(f"\n  Long book vs SPY, per {horizon_days}d window (every graded run, not compounded):")
+        print(f"    graded runs     : {sim['n_windows']}")
+        print(f"    avg excess      : {sim['avg_excess_return'] * 100:+.2f} pts per window")
+        print(f"    beat SPY        : {sim['n_beat']} of {sim['n_windows']} windows")
+        tr, br = sim["total_return"] * 100, sim["bench_return"] * 100
+        print(f"\n  Equity curve (one pot, non-overlapping {horizon_days}d holds):")
+        print(f"    held windows    : {sim['n_held']} of {sim['n_windows']} runs")
+        print(f"    start capital   : ${capital:,.0f}")
+        print(f"    final equity    : ${sim['final_equity']:,.0f}  ({tr:+.2f}%)")
+        print(f"    SPY, same days  : ${sim['final_bench_equity']:,.0f}  ({br:+.2f}%)")
+        print(f"    vs SPY          : {tr - br:+.2f} pts")
+    else:
+        print("\n  No graded full-watchlist runs yet (portfolio view needs a matured run).")
     print(f"\n  Decision scorecard — realized {horizon_days}d returns:")
     print(f"  {'tier':<12} {'n':>3} {'avg_return':>11} {'hit_rate':>9}")
     for tier in _TIER_ORDER:

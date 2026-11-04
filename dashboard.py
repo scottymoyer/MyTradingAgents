@@ -172,11 +172,18 @@ def view_performance() -> None:
         return
     sim = mock_portfolio.simulate()
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Resolved decisions", sc["n_resolved"])
-    c2.metric("Portfolio return", f"{sim['total_return'] * 100:+.2f}%")
-    c3.metric("SPY (same windows)", f"{sim['bench_return'] * 100:+.2f}%",
-              delta=f"{(sim['total_return'] - sim['bench_return']) * 100:+.2f}% vs SPY")
+    if sim["n_windows"]:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Avg excess vs SPY", f"{sim['avg_excess_return'] * 100:+.2f} pts",
+                  help="Long book minus SPY over the same 5-day window, averaged across "
+                       "every graded run. Not compounded.")
+        c2.metric("Beat SPY", f"{sim['n_beat']} of {sim['n_windows']} windows")
+        c3.metric("Equity curve vs SPY",
+                  f"{(sim['total_return'] - sim['bench_return']) * 100:+.2f} pts",
+                  help="One pot of money, non-overlapping 5-day holds (see below).")
+    else:
+        st.info("No graded full-watchlist runs yet, so there's no portfolio view. "
+                "The tier scorecard below still applies.")
 
     st.subheader("Signal by rating tier")
     st.caption("Hit = the price moved the way the call pointed (up for Buy/Overweight, "
@@ -192,10 +199,25 @@ def view_performance() -> None:
 
     if sim["curve"]:
         st.subheader("Equity curve vs SPY")
-        curve = pd.DataFrame(sim["curve"])
-        chart = curve.set_index("trade_date")[["equity", "bench_equity"]].rename(
-            columns={"equity": "Portfolio", "bench_equity": "SPY"})
-        st.line_chart(chart)
+        st.caption(f"One pot of money: buy a run's longs, hold 5 days, sell, roll into the "
+                   f"next run on/after the exit. {sim['n_held']} of {sim['n_windows']} runs "
+                   f"held — the rest started while capital was still in a book.")
+        cap = sim["capital"]
+        points = [{"date": sim["curve"][0]["trade_date"], "Portfolio": cap, "SPY": cap}]
+        points += [{"date": c["exit_date"], "Portfolio": c["equity"], "SPY": c["bench_equity"]}
+                   for c in sim["curve"]]
+        st.line_chart(pd.DataFrame(points).set_index("date"))
+
+    if sim["windows"]:
+        st.subheader("Every graded run")
+        win = pd.DataFrame(sim["windows"])
+        win = win.assign(
+            book_pct=(win["cohort_return"] * 100).round(2),
+            spy_pct=(win["spy_return"] * 100).round(2),
+            excess_pts=(win["excess_return"] * 100).round(2),
+        )[["trade_date", "exit_date", "n_long", "book_pct", "spy_pct", "excess_pts", "in_curve"]]
+        st.dataframe(win.sort_values("trade_date", ascending=False),
+                     use_container_width=True, hide_index=True)
 
     cols = ["ticker", "decision", "trade_date", "realized_return"]
     best, worst = st.columns(2)
